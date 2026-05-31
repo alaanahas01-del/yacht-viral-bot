@@ -56,16 +56,17 @@ def generate_viral_hook(yacht_info: str) -> dict:
             messages.append({"role": "assistant", "content": response.content})
             results = []
             for tu in tool_uses:
-                logger.info(f"Web arama: {tu.input.get('query')}")
+                query = tu.input.get("query")
+                logger.info("Web arama: %s", query)
                 results.append({
                     "type": "tool_result",
                     "tool_use_id": tu.id,
                     "content": (
-                        f"Arama tamamlandı: '{tu.input.get('query')}'. "
+                        "Arama tamamlandi: '" + str(query) + "'. "
                         "2025 viral hook trendleri: "
-                        "Merak soruları (%340 daha fazla izlenme), "
-                        "gizem/sır tekniği, sosyal kanıt ("X kişi bu soruyu sordu"), "
-                        "karşıtlık (daire mi yat mı), aciliyet (son 1 ilan) en etkili teknikler."
+                        "Merak sorulari (%340 daha fazla izlenme), "
+                        "gizem/sir teknigi, sosyal kanit (X kisi bu soruyu sordu), "
+                        "karsitlik (daire mi yat mi), aciliyet (son 1 ilan) en etkili teknikler."
                     )
                 })
             messages.append({"role": "user", "content": results})
