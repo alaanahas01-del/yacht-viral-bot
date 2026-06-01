@@ -15,54 +15,62 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 def _run(cmd: list, label: str):
     """FFmpeg komutunu çalıştırır, hata varsa loglar."""
-    logger.info(f"FFmpeg [{label}]: {' '.join(str(c) for c in cmd)}")
+    logger.info("FFmpeg [%s]: %s", label, " ".join(str(c) for c in cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        logger.error(f"FFmpeg stderr [{label}]:\n{result.stderr[-1000:]}")
+        logger.error("FFmpeg stderr [%s]:\n%s", label, result.stderr[-1000:])
         raise RuntimeError(f"FFmpeg başarısız [{label}]: {result.stderr[-300:]}")
 
 
 def assemble_final_video(
-    photo_bytes: bytes,
+    photos_bytes: list,   # list of bytes (1-10 fotoğraf)
     audio_bytes: bytes,
     drone_video_url: str,
     hook_text: str
 ) -> str:
     """
     Final video montajı:
-      Segment 1 (3 sn)  → yat fotoğrafı arka plan + hook metni overlay + sesli hook
-      Segment 2 (10 sn) → Runway drone videosu (sessiz) 
-      Toplam             → ~13 saniyelik 1080×1920 MP4
+      Segment 1  → fotoğraf slaytshow + hook metni overlay + sesli hook
+      Segment 2 (10 sn) → Runway drone videosu (sessiz)
+      Toplam             → ~13+ saniyelik 1080x1920 MP4
     Döner: final video dosya yolu
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
 
-        photo_path  = tmp / "photo.jpg"
-        audio_path  = tmp / "hook.mp3"
-        drone_path  = tmp / "drone.mp4"
-        hook_seg    = tmp / "seg_hook.mp4"
-        drone_seg   = tmp / "seg_drone.mp4"
-        final_tmp   = tmp / "final.mp4"
+        audio_path = tmp / "hook.mp3"
+        drone_path = tmp / "drone.mp4"
+        hook_seg   = tmp / "seg_hook.mp4"
+        drone_seg  = tmp / "seg_drone.mp4"
+        final_tmp  = tmp / "final.mp4"
 
         # ── dosyaları yaz ──────────────────────────────────────────
-        photo_path.write_bytes(photo_bytes)
         audio_path.write_bytes(audio_bytes)
         logger.info("Drone video indiriliyor...")
         drone_path.write_bytes(requests.get(drone_video_url, timeout=120).content)
 
-        # ── hook metni: tek tırnak ve özel karakterleri temizle ────
+        # ── fotoğrafları yaz ───────────────────────────────────────
+        photo_paths = []
+        for i, pb in enumerate(photos_bytes):
+            p = tmp / f"photo_{i}.jpg"
+            p.write_bytes(pb)
+            photo_paths.append(p)
+
+        n = len(photo_paths)
+        slide_duration = max(3.0, 3.0 * n) / n  # her fotoğrafa eşit süre, toplam min 3 sn
+        total_duration = slide_duration * n
+
+        # ── hook metni: özel karakterleri temizle ──────────────────
         safe_hook = (
             hook_text
             .replace("\\", "")
-            .replace("'", "\u2019")   # düz tırnak → sağ tırnak
+            .replace("'", "’")
             .replace(":", "\\:")
             .replace("[", "\\[")
             .replace("]", "\\]")
             .replace(",", "\\,")
-        )[:80]  # max 80 karakter
+        )[:80]
 
-        # ── Segment 1: fotoğraf + hook metni + ses (3 sn) ──────────
         drawtext = (
             f"drawtext=text='{safe_hook}'"
             ":fontsize=54"
@@ -76,23 +84,61 @@ def assemble_final_video(
             ":boxborderw=18"
         )
 
-        vf_hook = (
-            "scale=1080:1920:force_original_aspect_ratio=increase,"
-            "crop=1080:1920,"
-            f"{drawtext}"
-        )
+        # ── Segment 1: slaytshow + hook metni + ses ────────────────
+        if n == 1:
+            # Tek fotoğraf
+            vf_hook = (
+                "scale=1080:1920:force_original_aspect_ratio=increase,"
+                "crop=1080:1920,"
+                f"{drawtext}"
+            )
+            _run([
+                "ffmpeg", "-y",
+                "-loop", "1", "-i", str(photo_paths[0]),
+                "-i", str(audio_path),
+                "-vf", vf_hook,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k",
+                "-r", "30", "-t", str(total_duration),
+                "-pix_fmt", "yuv420p",
+                str(hook_seg)
+            ], "hook-segment")
+        else:
+            # Çoklu fotoğraf — concat demuxer ile slaytshow
+            concat_file = tmp / "slides.txt"
+            lines = []
+            for p in photo_paths:
+                lines.append(f"file '{p}'")
+                lines.append(f"duration {slide_duration:.2f}")
+            lines.append(f"file '{photo_paths[-1]}'")
+            concat_file.write_text("\n".join(lines))
 
-        _run([
-            "ffmpeg", "-y",
-            "-loop", "1", "-i", str(photo_path),
-            "-i", str(audio_path),
-            "-vf", vf_hook,
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-            "-c:a", "aac", "-b:a", "128k",
-            "-r", "30", "-t", "3",
-            "-pix_fmt", "yuv420p",
-            str(hook_seg)
-        ], "hook-segment")
+            slideshow_raw = tmp / "slideshow_raw.mp4"
+            _run([
+                "ffmpeg", "-y",
+                "-f", "concat", "-safe", "0", "-i", str(concat_file),
+                "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-r", "30", "-pix_fmt", "yuv420p",
+                str(slideshow_raw)
+            ], "slideshow")
+
+            vf_text = (
+                "scale=1080:1920:force_original_aspect_ratio=increase,"
+                "crop=1080:1920,"
+                f"{drawtext}"
+            )
+            _run([
+                "ffmpeg", "-y",
+                "-i", str(slideshow_raw),
+                "-i", str(audio_path),
+                "-vf", vf_text,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k",
+                "-r", "30", "-t", str(total_duration),
+                "-pix_fmt", "yuv420p",
+                str(hook_seg)
+            ], "hook-segment")
 
         # ── Segment 2: drone video (ölçekle + sessiz ses ekle) ─────
         vf_drone = (
@@ -130,5 +176,5 @@ def assemble_final_video(
         # ── kalıcı konuma taşı ─────────────────────────────────────
         dest = OUTPUT_DIR / f"yacht_{uuid.uuid4().hex[:8]}.mp4"
         shutil.copy(final_tmp, dest)
-        logger.info(f"Final video: {dest} ({dest.stat().st_size // 1024} KB)")
+        logger.info("Final video: %s (%d KB)", dest, dest.stat().st_size // 1024)
         return str(dest)

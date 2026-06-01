@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 async def process_yacht_submission(
     chat_id: int,
     yacht_info: str,
-    photo_bytes: bytes,
+    photos_bytes: list,   # list of bytes (1-10 fotoğraf)
     notify
 ):
     loop = asyncio.get_event_loop()
@@ -39,7 +39,7 @@ async def process_yacht_submission(
             "⏳ Runway Gen-3 ~2-3 dakika sürer, bekliyorum."
         )
         drone_video_url = await loop.run_in_executor(
-            None, generate_drone_video, photo_bytes, hook_data["video_prompt"]
+            None, generate_drone_video, photos_bytes[0], hook_data["video_prompt"]
         )
         await notify(chat_id, "✅ Drone videosu hazır!")
 
@@ -47,7 +47,7 @@ async def process_yacht_submission(
         await notify(chat_id, "✂️ <b>[4/6]</b> Hook + drone video birleştiriliyor...")
         final_video_path = await loop.run_in_executor(
             None, assemble_final_video,
-            photo_bytes, audio_bytes, drone_video_url, hook_data["hook"]
+            photos_bytes, audio_bytes, drone_video_url, hook_data["hook"]
         )
 
         # ── 5. Caption + hashtag üretildi (hook_agent'tan gelir) ───

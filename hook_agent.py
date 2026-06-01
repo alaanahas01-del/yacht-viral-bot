@@ -76,7 +76,7 @@ def generate_viral_hook(yacht_info: str) -> dict:
 
         # tool use yok, JSON parse et
         for block in response.content:
-            if hasattr(block, "text"):
+            if hasattr(block, "text") and block.text:
                 text = block.text.strip()
                 start = text.find("{")
                 end   = text.rfind("}") + 1
