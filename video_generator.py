@@ -7,13 +7,14 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
-RUNWAY_BASE    = "https://api.dev.runwayml.com/v1"
-RUNWAY_HEADERS = {
-    "Authorization": f"Bearer {RUNWAY_API_KEY}",
-    "Content-Type": "application/json",
-    "X-Runway-Version": "2024-11-06"
-}
+RUNWAY_BASE = "https://api.dev.runwayml.com/v1"
+
+def _runway_headers():
+    return {
+        "Authorization": f"Bearer {os.getenv('RUNWAY_API_KEY', '')}",
+        "Content-Type": "application/json",
+        "X-Runway-Version": "2024-11-06"
+    }
 
 DEFAULT_PROMPT = (
     "Cinematic luxury yacht drone footage, smooth aerial 360 orbit shot, "
@@ -64,7 +65,7 @@ def _submit_and_wait(image_uri: str, prompt: str) -> str:
     }
 
     r = requests.post(f"{RUNWAY_BASE}/image_to_video",
-                      headers=RUNWAY_HEADERS, json=payload, timeout=60)
+                      headers=_runway_headers(), json=payload, timeout=60)
 
     if r.status_code != 200:
         error_detail = r.text[:500]
@@ -82,7 +83,7 @@ def _submit_and_wait(image_uri: str, prompt: str) -> str:
         elapsed += 10
 
         status_r = requests.get(f"{RUNWAY_BASE}/tasks/{task_id}",
-                                headers=RUNWAY_HEADERS, timeout=30)
+                                headers=_runway_headers(), timeout=30)
         status_r.raise_for_status()
         task = status_r.json()
         status = task.get("status")

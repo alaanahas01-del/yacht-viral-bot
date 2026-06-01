@@ -4,7 +4,9 @@ import logging
 import anthropic
 
 logger = logging.getLogger(__name__)
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+def _get_client():
+    return anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 SYSTEM = """Sen lüks yat satış pazarlama uzmanısın.
 Viral sosyal medya hook'larını analiz edip aynı psikolojik teknikle orijinal hooklar üretirsin.
@@ -43,6 +45,7 @@ def generate_viral_hook(yacht_info: str) -> dict:
 
     tools = [{"type": "web_search_20250305", "name": "web_search"}]
 
+    client = _get_client()
     for attempt in range(5):
         response = client.messages.create(
             model="claude-opus-4-5",

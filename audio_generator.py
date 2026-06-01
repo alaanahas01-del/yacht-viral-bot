@@ -4,21 +4,23 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
-# Türkçe destekleyen ses — ElevenLabs voice library'den değiştirebilirsin
-VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
-
 def generate_voiceover(text: str) -> bytes:
     """
     ElevenLabs multilingual v2 ile Türkçe hook metni seslendirme.
     Döner: MP3 bytes
     """
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
+    api_key = os.getenv("ELEVENLABS_API_KEY", "")
+    voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+
+    if not api_key:
+        raise ValueError("ELEVENLABS_API_KEY environment variable is not set")
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
     headers = {
         "Accept": "audio/mpeg",
         "Content-Type": "application/json",
-        "xi-api-key": ELEVENLABS_API_KEY
+        "xi-api-key": api_key
     }
 
     payload = {
