@@ -37,8 +37,8 @@ def _run(cmd: list, label: str):
     logger.info("FFmpeg [%s]: %s", label, " ".join(str(c) for c in cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        logger.error("FFmpeg stderr [%s]:\n%s", label, result.stderr[-1000:])
-        raise RuntimeError(f"FFmpeg başarısız [{label}]: {result.stderr[-300:]}")
+        logger.error("FFmpeg stderr [%s]:\n%s", label, result.stderr[-3000:])
+        raise RuntimeError(f"FFmpeg başarısız [{label}]: {result.stderr[-800:]}")
 
 
 def assemble_final_video(
@@ -146,7 +146,6 @@ def assemble_final_video(
                     "-r", "30",
                     "-t", str(slide_duration),
                     "-pix_fmt", "yuv420p",
-                    "-movflags", "+faststart",
                     str(seg)
                 ], f"slide-{i}")
                 slide_segs.append(seg)
