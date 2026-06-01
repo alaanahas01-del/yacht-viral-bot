@@ -1,3 +1,4 @@
+import io
 import logging
 import shutil
 import subprocess
@@ -8,6 +9,24 @@ from pathlib import Path
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_jpeg(photo_bytes: bytes) -> bytes:
+    """Her fotoğrafı standart RGB JPEG'e çevir (FFmpeg uyumlu)."""
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(photo_bytes))
+        img = img.convert("RGB")
+        # Max boyut sınırla
+        max_dim = 2160
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=90)
+        return buf.getvalue()
+    except Exception as e:
+        logger.warning("JPEG normalize başarısız (%s), orijinal kullanılıyor", e)
+        return photo_bytes
 
 OUTPUT_DIR = Path("output_videos")
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -49,11 +68,11 @@ def assemble_final_video(
         logger.info("Drone video indiriliyor...")
         drone_path.write_bytes(requests.get(drone_video_url, timeout=120).content)
 
-        # ── fotoğrafları yaz ───────────────────────────────────────
+        # ── fotoğrafları yaz (Pillow ile normalize ederek) ────────
         photo_paths = []
         for i, pb in enumerate(photos_bytes):
             p = tmp / f"photo_{i}.jpg"
-            p.write_bytes(pb)
+            p.write_bytes(_normalize_jpeg(pb))
             photo_paths.append(p)
 
         n = len(photo_paths)
@@ -110,15 +129,19 @@ def assemble_final_video(
                 seg = tmp / f"slide_{i}.mp4"
                 _run([
                     "ffmpeg", "-y",
-                    "-loop", "1", "-i", str(p),
+                    "-framerate", "30",
+                    "-loop", "1", "-t", str(slide_duration),
+                    "-i", str(p),
                     "-vf", (
-                        "scale=1080:1920:force_original_aspect_ratio=increase,"
+                        "scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,"
                         "crop=1080:1920,"
+                        "setsar=1,"
                         "format=yuv420p"
                     ),
                     "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                    "-r", "30", "-t", str(slide_duration),
+                    "-r", "30",
                     "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart",
                     str(seg)
                 ], f"slide-{i}")
                 slide_segs.append(seg)
