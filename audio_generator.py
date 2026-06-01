@@ -34,9 +34,13 @@ def generate_voiceover(text: str) -> bytes:
         }
     }
 
-    logger.info(f"ElevenLabs TTS: {text[:60]}...")
+    logger.info("ElevenLabs TTS: %s...", text[:60])
+    logger.info("ElevenLabs key len=%d prefix=%s", len(api_key), api_key[:8])
     r = requests.post(url, json=payload, headers=headers, timeout=30)
-    r.raise_for_status()
 
-    logger.info(f"Ses üretildi: {len(r.content)} byte")
-    return r.content  # MP3 bytes
+    if r.status_code != 200:
+        logger.error("ElevenLabs hata %d: %s", r.status_code, r.text[:500])
+        raise RuntimeError(f"ElevenLabs {r.status_code}: {r.text[:300]}")
+
+    logger.info("Ses üretildi: %d byte", len(r.content))
+    return r.content
