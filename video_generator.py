@@ -72,7 +72,7 @@ def generate_drone_video(photo_bytes: bytes, prompt: str = "") -> str:
         "promptImage": image_uri,
         "promptText": prompt,
         "duration": 5,
-        "ratio": "9:16",
+        "ratio": "768:1280",
         "watermark": False
     }
 
@@ -80,8 +80,9 @@ def generate_drone_video(photo_bytes: bytes, prompt: str = "") -> str:
                       headers=RUNWAY_HEADERS, json=payload, timeout=60)
 
     if r.status_code != 200:
-        logger.error("Runway hata: %d - %s", r.status_code, r.text[:500])
-        r.raise_for_status()
+        error_detail = r.text[:500]
+        logger.error("Runway hata: %d - %s", r.status_code, error_detail)
+        raise RuntimeError(f"Runway API {r.status_code}: {error_detail}")
 
     task_id = r.json()["id"]
     logger.info("Runway task_id: %s", task_id)
