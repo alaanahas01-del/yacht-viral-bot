@@ -52,21 +52,8 @@ def _resize_image(photo_bytes: bytes) -> bytes:
         return photo_bytes
 
 
-def generate_drone_video(photo_bytes: bytes, prompt: str = "") -> str:
-    """
-    Yat fotoğrafından Runway Gen-3 Alpha ile 10 saniyelik drone videosu üretir.
-    Döner: video download URL (string)
-    """
-    prompt = prompt or DEFAULT_PROMPT
-
-    # Fotoğrafı küçült
-    if len(photo_bytes) > MAX_IMAGE_SIZE:
-        photo_bytes = _resize_image(photo_bytes)
-
-    b64 = base64.b64encode(photo_bytes).decode("utf-8")
-    image_uri = f"data:image/jpeg;base64,{b64}"
-
-    logger.info("Runway Gen-3 görevi başlatılıyor... (image: %d KB)", len(photo_bytes) // 1024)
+def _submit_and_wait(image_uri: str, prompt: str) -> str:
+    """Tek bir Runway task'ı gönderip tamamlanmasını bekler."""
     payload = {
         "model": "gen3a_turbo",
         "promptImage": image_uri,
@@ -81,7 +68,7 @@ def generate_drone_video(photo_bytes: bytes, prompt: str = "") -> str:
 
     if r.status_code != 200:
         error_detail = r.text[:500]
-        logger.error("Runway hata: %d - %s", r.status_code, error_detail)
+        logger.error("Runway API hata: %d - %s", r.status_code, error_detail)
         raise RuntimeError(f"Runway API {r.status_code}: {error_detail}")
 
     task_id = r.json()["id"]
@@ -109,7 +96,42 @@ def generate_drone_video(photo_bytes: bytes, prompt: str = "") -> str:
             return output[0]
 
         if status in ("FAILED", "CANCELLED"):
-            reason = task.get("failure") or task.get("failureCode", "bilinmiyor")
-            raise RuntimeError(f"Runway başarısız: {reason}")
+            failure = task.get("failure", "")
+            failure_code = task.get("failureCode", "")
+            logger.error("Runway FAIL — code: %s | msg: %s", failure_code, failure)
+            raise RuntimeError(f"Runway başarısız [{failure_code or 'NO_CODE'}]: {failure or 'mesaj yok'}")
 
     raise TimeoutError(f"Runway {max_wait_sec}s içinde tamamlanamadı")
+
+
+def generate_drone_video(photo_bytes: bytes, prompt: str = "") -> str:
+    """
+    Yat fotoğrafından Runway Gen-3 Alpha Turbo ile drone videosu üretir.
+    Otomatik retry: INTERNAL hatalarında 3 deneme.
+    Döner: video download URL (string)
+    """
+    prompt = prompt or DEFAULT_PROMPT
+
+    # Fotoğrafı her zaman küçült/sıkıştır (Runway için)
+    photo_bytes = _resize_image(photo_bytes)
+
+    b64 = base64.b64encode(photo_bytes).decode("utf-8")
+    image_uri = f"data:image/jpeg;base64,{b64}"
+
+    logger.info("Runway Gen-3 görevi başlatılıyor... (image: %d KB)", len(photo_bytes) // 1024)
+
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            return _submit_and_wait(image_uri, prompt)
+        except RuntimeError as e:
+            err = str(e)
+            last_error = e
+            # SAFETY veya ASSET.INVALID gibi kalıcı hatalarda retry yapma
+            if "SAFETY" in err or "ASSET.INVALID" in err or "INPUT_PREPROCESSING.SAFETY" in err:
+                raise
+            logger.warning("Runway deneme %d/3 başarısız: %s — tekrar denenecek", attempt, err)
+            if attempt < 3:
+                time.sleep(15)
+
+    raise last_error
