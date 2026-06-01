@@ -162,10 +162,13 @@ async def debug_keys():
     """API key'lerin ilk 8 karakterini göster (debug için geçici)"""
     def mask(key: str) -> str:
         return key[:8] + "..." if key and len(key) > 8 else f"BOŞ({len(key) if key else 0})"
+    el_key = os.getenv("ELEVENLABS_API_KEY", "")
     return {
         "TELEGRAM_BOT_TOKEN": mask(os.getenv("TELEGRAM_BOT_TOKEN", "")),
         "ANTHROPIC_API_KEY": mask(os.getenv("ANTHROPIC_API_KEY", "")),
-        "ELEVENLABS_API_KEY": mask(os.getenv("ELEVENLABS_API_KEY", "")),
+        "ELEVENLABS_API_KEY": mask(el_key),
+        "ELEVENLABS_API_KEY_len": len(el_key),
+        "ELEVENLABS_API_KEY_repr": repr(el_key[:12]),
         "ELEVENLABS_VOICE_ID": os.getenv("ELEVENLABS_VOICE_ID", ""),
         "RUNWAY_API_KEY": mask(os.getenv("RUNWAY_API_KEY", "")),
     }
