@@ -71,8 +71,8 @@ def generate_drone_video(photo_bytes: bytes, prompt: str = "") -> str:
         "model": "gen3a_turbo",
         "promptImage": image_uri,
         "promptText": prompt,
-        "duration": 10,
-        "ratio": "768:1280",
+        "duration": 5,
+        "ratio": "9:16",
         "watermark": False
     }
 
