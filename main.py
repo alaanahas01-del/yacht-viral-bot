@@ -169,6 +169,7 @@ async def debug_keys():
         "ELEVENLABS_API_KEY": mask(el_key),
         "ELEVENLABS_API_KEY_len": len(el_key),
         "ELEVENLABS_API_KEY_repr": repr(el_key[:12]),
+        "ELEVENLABS_API_KEY_end": repr(el_key[-4:]),
         "ELEVENLABS_VOICE_ID": os.getenv("ELEVENLABS_VOICE_ID", ""),
         "RUNWAY_API_KEY": mask(os.getenv("RUNWAY_API_KEY", "")),
     }
