@@ -28,6 +28,15 @@ async def send_message(chat_id: int, text: str):
             "chat_id": chat_id, "text": text, "parse_mode": "HTML"
         })
 
+async def send_video(chat_id: int, video_path: str, caption: str = ""):
+    async with httpx.AsyncClient(timeout=120) as client:
+        with open(video_path, "rb") as f:
+            await client.post(
+                f"{TELEGRAM_API}/sendVideo",
+                data={"chat_id": chat_id, "caption": caption, "supports_streaming": "true"},
+                files={"video": ("video.mp4", f, "video/mp4")}
+            )
+
 async def download_photo(file_id: str) -> bytes:
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.get(f"{TELEGRAM_API}/getFile", params={"file_id": file_id})
@@ -66,7 +75,7 @@ async def process_media_group(group_id: str):
         return
 
     asyncio.create_task(
-        process_yacht_submission(chat_id, caption, photos_bytes, send_message)
+        process_yacht_submission(chat_id, caption, photos_bytes, send_message, send_video)
     )
 
 # ── webhook ────────────────────────────────────────────────────────

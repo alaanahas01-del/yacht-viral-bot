@@ -14,13 +14,14 @@ async def process_yacht_submission(
     chat_id: int,
     yacht_info: str,
     photos_bytes: list,   # list of bytes (1-10 fotoğraf)
-    notify
+    notify,
+    send_video=None       # opsiyonel: videoyu Telegram'a gönder
 ):
     loop = asyncio.get_event_loop()
 
     try:
         # ── 1. Viral hook araştır ───────────────────────────────────
-        await notify(chat_id, "🔍 <b>[1/6]</b> Viral hooklar araştırılıyor...")
+        await notify(chat_id, "🔍 <b>[1/5]</b> Viral hooklar araştırılıyor...")
         hook_data = await loop.run_in_executor(None, generate_viral_hook, yacht_info)
 
         await notify(chat_id,
@@ -30,12 +31,12 @@ async def process_yacht_submission(
         )
 
         # ── 2. Hook sesi üret (ElevenLabs) ─────────────────────────
-        await notify(chat_id, "🎙️ <b>[2/6]</b> Hook sesi üretiliyor (ElevenLabs)...")
+        await notify(chat_id, "🎙️ <b>[2/5]</b> Hook sesi üretiliyor (ElevenLabs)...")
         audio_bytes = await loop.run_in_executor(None, generate_voiceover, hook_data["hook"])
 
         # ── 3. Drone videosu üret (Runway Gen-3) ───────────────────
         await notify(chat_id,
-            "🎬 <b>[3/6]</b> Drone videosu üretiliyor...\n"
+            "🎬 <b>[3/5]</b> Drone videosu üretiliyor...\n"
             "⏳ Runway Gen-3 ~2-3 dakika sürer, bekliyorum."
         )
         drone_video_url = await loop.run_in_executor(
@@ -44,33 +45,25 @@ async def process_yacht_submission(
         await notify(chat_id, "✅ Drone videosu hazır!")
 
         # ── 4. Video kurgusu (FFmpeg) ───────────────────────────────
-        await notify(chat_id, "✂️ <b>[4/6]</b> Hook + drone video birleştiriliyor...")
+        await notify(chat_id, "✂️ <b>[4/5]</b> Hook + drone video birleştiriliyor...")
         final_video_path = await loop.run_in_executor(
             None, assemble_final_video,
             photos_bytes, audio_bytes, drone_video_url, hook_data["hook"]
         )
 
-        # ── 5. Caption + hashtag üretildi (hook_agent'tan gelir) ───
-        await notify(chat_id, "✍️ <b>[5/6]</b> Platform captionları hazır. Yükleniyor...")
-
-        # ── 6. Üç platforma yayınla ─────────────────────────────────
-        await notify(chat_id, "🚀 <b>[6/6]</b> TikTok · Instagram · YouTube'a yükleniyor...")
-        results = await loop.run_in_executor(
-            None, publish_to_all_platforms, final_video_path, hook_data["captions"]
+        # ── 5. Videoyu Telegram'a gönder ───────────────────────────
+        await notify(chat_id, "📤 <b>[5/5]</b> Video hazır, gönderiliyor...")
+        if send_video:
+            await send_video(
+                chat_id,
+                final_video_path,
+                caption=f"🎬 {hook_data['hook']}\n\n📊 Viral skor: {hook_data['viral_score']}/100"
+            )
+        await notify(chat_id, "🎉 <b>Video tamamlandı!</b>\n\n📋 Captions:\n\n"
+            f"<b>TikTok:</b>\n{hook_data['captions'].get('tiktok','')}\n\n"
+            f"<b>Instagram:</b>\n{hook_data['captions'].get('instagram','')}\n\n"
+            f"<b>YouTube:</b>\n{hook_data['captions'].get('youtube','')}"
         )
-
-        # ── Sonuç raporu ────────────────────────────────────────────
-        report = "🎉 <b>Tamamlandı!</b>\n\n"
-        for platform, res in results.items():
-            icon = "✅" if res["success"] else "❌"
-            report += f"{icon} <b>{platform}</b>\n"
-            if res.get("url"):
-                report += f"🔗 {res['url']}\n"
-            if not res["success"]:
-                report += f"⚠️ {res.get('error', 'Bilinmeyen hata')}\n"
-            report += "\n"
-
-        await notify(chat_id, report)
 
         # temizle
         Path(final_video_path).unlink(missing_ok=True)
