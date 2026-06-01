@@ -113,12 +113,15 @@ def assemble_final_video(
             )
             _run([
                 "ffmpeg", "-y",
-                "-loop", "1", "-i", str(photo_paths[0]),
+                "-loop", "1",
+                "-framerate", "30",
+                "-i", str(photo_paths[0]),
                 "-i", str(audio_path),
                 "-vf", vf_hook,
                 "-c:v", "libx264", "-preset", "fast", "-crf", "23",
                 "-c:a", "aac", "-b:a", "128k",
-                "-r", "30", "-t", str(total_duration),
+                "-r", "30",
+                "-t", str(total_duration),
                 "-pix_fmt", "yuv420p",
                 str(hook_seg)
             ], "hook-segment")
@@ -127,10 +130,11 @@ def assemble_final_video(
             slide_segs = []
             for i, p in enumerate(photo_paths):
                 seg = tmp / f"slide_{i}.mp4"
+                logger.info("Slide %d: %s (%d KB)", i, p, p.stat().st_size // 1024)
                 _run([
                     "ffmpeg", "-y",
+                    "-loop", "1",
                     "-framerate", "30",
-                    "-loop", "1", "-t", str(slide_duration),
                     "-i", str(p),
                     "-vf", (
                         "scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,"
@@ -140,6 +144,7 @@ def assemble_final_video(
                     ),
                     "-c:v", "libx264", "-preset", "fast", "-crf", "23",
                     "-r", "30",
+                    "-t", str(slide_duration),
                     "-pix_fmt", "yuv420p",
                     "-movflags", "+faststart",
                     str(seg)
