@@ -43,3 +43,12 @@ def generate_voiceover(text: str) -> bytes:
 
     logger.info("Ses üretildi: %d byte", len(r.content))
     return r.content
+
+
+def generate_outro_voice(text: str = "Bilgi için DM'den ulaşın") -> bytes:
+    """End card için kısa outro seslendirme. Hata olursa b'' döner (opsiyonel)."""
+    try:
+        return generate_voiceover(text)
+    except Exception as e:
+        logger.warning("Outro sesi üretilemedi: %s", e)
+        return b""

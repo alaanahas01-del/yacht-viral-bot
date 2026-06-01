@@ -1,85 +1,74 @@
+import os
 import asyncio
 import logging
-from pathlib import Path
 
 from hook_agent      import generate_viral_hook
-from audio_generator import generate_voiceover
+from audio_generator import generate_voiceover, generate_outro_voice
+from music_generator import generate_music
 from video_generator import generate_drone_video
-from video_editor    import assemble_final_video
-from publisher       import publish_to_all_platforms
+from video_editor    import assemble_final_video, PHOTO_DUR, ENDCARD_DUR, XFADE, MAX_PHOTOS
 
 logger = logging.getLogger(__name__)
 
-async def process_yacht_submission(
-    chat_id: int,
-    yacht_info: str,
-    photos_bytes: list,   # list of bytes (1-10 fotoğraf)
-    notify,
-    send_video=None       # opsiyonel: videoyu Telegram'a gönder
-):
+
+def _estimate_duration(n_photos: int, has_drone: bool) -> float:
+    n = min(n_photos, MAX_PHOTOS)
+    clips = (1 if has_drone else 0) + n + 1  # +endcard
+    base = (5.0 if has_drone else 0.0) + PHOTO_DUR * n + ENDCARD_DUR
+    return max(8.0, base - XFADE * (clips - 1))
+
+
+async def process_yacht_submission(chat_id, yacht_info, photos_bytes, notify, deliver):
+    """
+    Profesyonel reel üretir ve onaya sunar (deliver callback).
+    deliver(chat_id, video_path, hook_data) -> Telegram'a video + onay butonları gönderir.
+    """
     loop = asyncio.get_event_loop()
-
     try:
-        # ── 1. Viral hook araştır ───────────────────────────────────
-        await notify(chat_id, "🔍 <b>[1/5]</b> Viral hooklar araştırılıyor...")
+        # 1. Hook + caption (Claude)
+        await notify(chat_id, "🧠 <b>[1/5]</b> Viral hook ve caption'lar hazırlanıyor...")
         hook_data = await loop.run_in_executor(None, generate_viral_hook, yacht_info)
-
         await notify(chat_id,
-            f"✅ Hook seçildi:\n\n"
-            f"<i>«{hook_data['hook']}»</i>\n\n"
-            f"📊 Teknik: <b>{hook_data['technique']}</b>  |  Skor: <b>{hook_data['viral_score']}/100</b>"
-        )
+            f"✅ Hook: <i>«{hook_data['hook']}»</i>\n"
+            f"📊 {hook_data['technique']} · skor {hook_data['viral_score']}/100")
 
-        # ── 2. Hook sesi üret (ElevenLabs) ─────────────────────────
-        await notify(chat_id, "🎙️ <b>[2/5]</b> Hook sesi üretiliyor (ElevenLabs)...")
+        # 2. Seslendirme (hook + outro) — opsiyonel
+        await notify(chat_id, "🎙️ <b>[2/5]</b> Seslendirme üretiliyor...")
         try:
-            audio_bytes = await loop.run_in_executor(None, generate_voiceover, hook_data["hook"])
+            hook_voice = await loop.run_in_executor(None, generate_voiceover, hook_data["hook"])
         except Exception as e:
-            logger.warning("Ses üretilemedi: %s", e)
-            await notify(chat_id, "⚠️ Ses üretilemedi (kota/hata), video sessiz devam edecek.")
-            audio_bytes = None
+            logger.warning("Hook sesi yok: %s", e)
+            hook_voice = None
+        outro_voice = await loop.run_in_executor(None, generate_outro_voice)
+        outro_voice = outro_voice or None
 
-        # ── 3. Drone videosu üret (Runway Gen-3) ───────────────────
-        await notify(chat_id,
-            "🎬 <b>[3/5]</b> Drone videosu üretiliyor...\n"
-            "⏳ Runway Gen-3 ~2-3 dakika sürer, bekliyorum."
-        )
+        # 3. Sinematik drone görüntüsü (fal.ai Kling) — opsiyonel
+        await notify(chat_id, "🎬 <b>[3/5]</b> Sinematik görüntü üretiliyor (1-3 dk)...")
+        drone_url = await loop.run_in_executor(
+            None, generate_drone_video, photos_bytes[0], hook_data.get("video_prompt", ""))
+        if not drone_url:
+            await notify(chat_id, "ℹ️ AI görüntü atlandı — fotoğraflar sinematik hareketle işlenecek.")
+
+        # 4. Müzik (ElevenLabs Music / prosedürel yedek)
+        est = _estimate_duration(len(photos_bytes), bool(drone_url))
         try:
-            drone_video_url = await loop.run_in_executor(
-                None, generate_drone_video, photos_bytes[0], hook_data["video_prompt"]
-            )
-            await notify(chat_id, "✅ Drone videosu hazır!")
+            music = await loop.run_in_executor(None, generate_music, est + 3)
+            music = music or None
         except Exception as e:
-            logger.warning("Drone videosu üretilemedi: %s", e)
-            await notify(chat_id, "⚠️ Drone videosu üretilemedi, sadece fotoğraflarla devam.")
-            drone_video_url = ""
+            logger.warning("Müzik yok: %s", e)
+            music = None
 
-        # ── 4. Video kurgusu (FFmpeg) ───────────────────────────────
-        await notify(chat_id, "✂️ <b>[4/5]</b> Hook + drone video birleştiriliyor...")
-        final_video_path = await loop.run_in_executor(
+        # 5. Profesyonel montaj
+        await notify(chat_id, "✂️ <b>[4/5]</b> Profesyonel montaj yapılıyor...")
+        contact = os.getenv("CONTACT_HANDLE", "")
+        video_path = await loop.run_in_executor(
             None, assemble_final_video,
-            photos_bytes, audio_bytes, drone_video_url, hook_data["hook"]
-        )
+            photos_bytes, hook_data["hook"], music, hook_voice, outro_voice, drone_url, contact)
 
-        # ── 5. Videoyu Telegram'a gönder ───────────────────────────
-        await notify(chat_id, "📤 <b>[5/5]</b> Video hazır, gönderiliyor...")
-        if send_video:
-            await send_video(
-                chat_id,
-                final_video_path,
-                caption=f"🎬 {hook_data['hook']}\n\n📊 Viral skor: {hook_data['viral_score']}/100"
-            )
-        await notify(chat_id, "🎉 <b>Video tamamlandı!</b>\n\n📋 Captions:\n\n"
-            f"<b>TikTok:</b>\n{hook_data['captions'].get('tiktok','')}\n\n"
-            f"<b>Instagram:</b>\n{hook_data['captions'].get('instagram','')}\n\n"
-            f"<b>YouTube:</b>\n{hook_data['captions'].get('youtube','')}"
-        )
-
-        # temizle
-        Path(final_video_path).unlink(missing_ok=True)
+        # 6. Onaya sun
+        await notify(chat_id, "📤 <b>[5/5]</b> Video hazır! Onayına sunuluyor...")
+        await deliver(chat_id, video_path, hook_data)
 
     except Exception as e:
         logger.error("Pipeline hatası", exc_info=True)
-        await notify(chat_id,
-            f"❌ <b>Hata oluştu:</b>\n<code>{str(e)[:400]}</code>"
-        )
+        await notify(chat_id, f"❌ <b>Hata:</b> <code>{str(e)[:400]}</code>")

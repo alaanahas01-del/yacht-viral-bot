@@ -16,3 +16,8 @@ venv/
 .vscode/
 output_videos/
 _test_*.py
+_exifcheck.py
+_analysis/
+_log.txt
+results.txt
+*.txt.tmp
