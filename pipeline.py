@@ -32,17 +32,27 @@ async def process_yacht_submission(
 
         # ── 2. Hook sesi üret (ElevenLabs) ─────────────────────────
         await notify(chat_id, "🎙️ <b>[2/5]</b> Hook sesi üretiliyor (ElevenLabs)...")
-        audio_bytes = await loop.run_in_executor(None, generate_voiceover, hook_data["hook"])
+        try:
+            audio_bytes = await loop.run_in_executor(None, generate_voiceover, hook_data["hook"])
+        except Exception as e:
+            logger.warning("Ses üretilemedi: %s", e)
+            await notify(chat_id, "⚠️ Ses üretilemedi (kota/hata), video sessiz devam edecek.")
+            audio_bytes = None
 
         # ── 3. Drone videosu üret (Runway Gen-3) ───────────────────
         await notify(chat_id,
             "🎬 <b>[3/5]</b> Drone videosu üretiliyor...\n"
             "⏳ Runway Gen-3 ~2-3 dakika sürer, bekliyorum."
         )
-        drone_video_url = await loop.run_in_executor(
-            None, generate_drone_video, photos_bytes[0], hook_data["video_prompt"]
-        )
-        await notify(chat_id, "✅ Drone videosu hazır!")
+        try:
+            drone_video_url = await loop.run_in_executor(
+                None, generate_drone_video, photos_bytes[0], hook_data["video_prompt"]
+            )
+            await notify(chat_id, "✅ Drone videosu hazır!")
+        except Exception as e:
+            logger.warning("Drone videosu üretilemedi: %s", e)
+            await notify(chat_id, "⚠️ Drone videosu üretilemedi, sadece fotoğraflarla devam.")
+            drone_video_url = ""
 
         # ── 4. Video kurgusu (FFmpeg) ───────────────────────────────
         await notify(chat_id, "✂️ <b>[4/5]</b> Hook + drone video birleştiriliyor...")
@@ -71,6 +81,5 @@ async def process_yacht_submission(
     except Exception as e:
         logger.error("Pipeline hatası", exc_info=True)
         await notify(chat_id,
-            f"❌ <b>Hata oluştu:</b>\n<code>{str(e)[:300]}</code>\n\n"
-            "Loglara bak: <code>docker logs yacht-agent</code>"
+            f"❌ <b>Hata oluştu:</b>\n<code>{str(e)[:400]}</code>"
         )

@@ -3,12 +3,32 @@ import logging
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import uuid
 from pathlib import Path
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+OUTPUT_DIR = Path("output_videos")
+OUTPUT_DIR.mkdir(exist_ok=True)
+
+# Türkçe destekleyen font yolları (Docker'da fonts-dejavu-core ile gelir)
+FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+]
+
+
+def _find_font() -> str:
+    for f in FONT_CANDIDATES:
+        if Path(f).exists():
+            return f
+    logger.warning("Türkçe font bulunamadı, metin overlay atlanabilir")
+    return ""
 
 
 def _normalize_jpeg(photo_bytes: bytes) -> bytes:
@@ -17,7 +37,6 @@ def _normalize_jpeg(photo_bytes: bytes) -> bytes:
         from PIL import Image
         img = Image.open(io.BytesIO(photo_bytes))
         img = img.convert("RGB")
-        # Max boyut sınırla
         max_dim = 2160
         if max(img.size) > max_dim:
             img.thumbnail((max_dim, max_dim), Image.LANCZOS)
@@ -28,17 +47,87 @@ def _normalize_jpeg(photo_bytes: bytes) -> bytes:
         logger.warning("JPEG normalize başarısız (%s), orijinal kullanılıyor", e)
         return photo_bytes
 
-OUTPUT_DIR = Path("output_videos")
-OUTPUT_DIR.mkdir(exist_ok=True)
-
 
 def _run(cmd: list, label: str):
-    """FFmpeg komutunu çalıştırır, hata varsa loglar."""
-    logger.info("FFmpeg [%s]: %s", label, " ".join(str(c) for c in cmd))
+    """FFmpeg komutunu çalıştırır, hata varsa loglar ve exception fırlatır."""
+    logger.info("FFmpeg [%s] başlıyor", label)
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        logger.error("FFmpeg stderr [%s]:\n%s", label, result.stderr[-3000:])
-        raise RuntimeError(f"FFmpeg başarısız [{label}]: {result.stderr[-800:]}")
+        stderr = result.stderr or ""
+        logger.error("FFmpeg [%s] rc=%d stderr:\n%s", label, result.returncode, stderr[-4000:])
+        # Hem baş hem son kısmı mesaja koy (gerçek hata genelde sonda)
+        raise RuntimeError(
+            f"FFmpeg [{label}] rc={result.returncode}: ...{stderr[-600:]}"
+        )
+    logger.info("FFmpeg [%s] tamam", label)
+
+
+def _wrap_hook(hook_text: str, width: int = 20) -> str:
+    """Hook metnini satırlara böl (drawtext otomatik sarmıyor)."""
+    clean = " ".join(hook_text.split())[:90]
+    lines = textwrap.wrap(clean, width=width)
+    return "\n".join(lines[:4])  # max 4 satır
+
+
+def _build_hook_segment(photo_paths, audio_path, hook_text, out_path, font, with_text):
+    """
+    Tüm fotoğrafları slaytshow yapıp (concat), üstüne hook metni + ses ekler.
+    Tek FFmpeg komutu — daha az hata noktası.
+    """
+    n = len(photo_paths)
+    per = 4.0 if n == 1 else 3.0
+    total = max(per * n, 4.0)
+
+    tmp_dir = out_path.parent
+    hook_txt = tmp_dir / "hook.txt"
+    hook_txt.write_text(_wrap_hook(hook_text), encoding="utf-8")
+
+    # Inputlar: her foto -loop 1 -t per -i  (input-side -t = güvenilir slaytshow)
+    cmd = ["ffmpeg", "-y"]
+    for p in photo_paths:
+        cmd += ["-loop", "1", "-t", str(per), "-i", str(p)]
+    # Ses: varsa mp3, yoksa sessiz ses (pipeline sesi üretemezse video yine çıksın)
+    if audio_path and Path(audio_path).exists():
+        cmd += ["-i", str(audio_path)]
+    else:
+        cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+
+    # filter_complex
+    parts = []
+    for i in range(n):
+        parts.append(
+            f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,"
+            f"crop=1080:1920,setsar=1,fps=30,format=yuv420p[v{i}]"
+        )
+    concat_inputs = "".join(f"[v{i}]" for i in range(n))
+    parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[slides]")
+
+    if with_text and font:
+        # textfile kullan — Türkçe karakter + escape sorununu tamamen çözer
+        drawtext = (
+            f"[slides]drawtext=textfile={hook_txt}:fontfile={font}"
+            ":fontsize=52:fontcolor=white"
+            ":x=(w-text_w)/2:y=h*0.58"
+            ":line_spacing=10"
+            ":shadowcolor=black@0.8:shadowx=2:shadowy=2"
+            ":box=1:boxcolor=black@0.5:boxborderw=20[v]"
+        )
+        parts.append(drawtext)
+        vmap = "[v]"
+    else:
+        vmap = "[slides]"
+
+    filter_complex = ";".join(parts)
+
+    cmd += [
+        "-filter_complex", filter_complex,
+        "-map", vmap, "-map", f"{n}:a",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+        "-t", str(total),
+        str(out_path)
+    ]
+    _run(cmd, f"hook-segment(text={with_text},n={n})")
 
 
 def assemble_final_video(
@@ -48,14 +137,15 @@ def assemble_final_video(
     hook_text: str
 ) -> str:
     """
-    Final video montajı:
-      Segment 1  → fotoğraf slaytshow + hook metni overlay + sesli hook
-      Segment 2 (10 sn) → Runway drone videosu (sessiz)
-      Toplam             → ~13+ saniyelik 1080x1920 MP4
+    Final video:
+      Segment 1 → fotoğraf slaytshow + hook metni + ses
+      Segment 2 → Runway drone videosu (sessiz)
+    Tüm adımlarda fallback var; en kötü durumda en azından slaytshow döner.
     Döner: final video dosya yolu
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
+        font = _find_font()
 
         audio_path = tmp / "hook.mp3"
         drone_path = tmp / "drone.mp4"
@@ -63,162 +153,71 @@ def assemble_final_video(
         drone_seg  = tmp / "seg_drone.mp4"
         final_tmp  = tmp / "final.mp4"
 
-        # ── dosyaları yaz ──────────────────────────────────────────
-        audio_path.write_bytes(audio_bytes)
-        logger.info("Drone video indiriliyor...")
-        drone_path.write_bytes(requests.get(drone_video_url, timeout=120).content)
+        if audio_bytes:
+            audio_path.write_bytes(audio_bytes)
+        else:
+            audio_path = None  # sessiz devam
 
-        # ── fotoğrafları yaz (Pillow ile normalize ederek) ────────
+        # ── fotoğrafları normalize edip yaz ────────────────────────
         photo_paths = []
         for i, pb in enumerate(photos_bytes):
             p = tmp / f"photo_{i}.jpg"
             p.write_bytes(_normalize_jpeg(pb))
             photo_paths.append(p)
+        if not photo_paths:
+            raise ValueError("Hiç fotoğraf yok")
 
-        n = len(photo_paths)
-        slide_duration = max(3.0, 3.0 * n) / n  # her fotoğrafa eşit süre, toplam min 3 sn
-        total_duration = slide_duration * n
+        # ── Segment 1: hook (önce metinli, olmazsa metinsiz) ──────
+        try:
+            _build_hook_segment(photo_paths, audio_path, hook_text, hook_seg, font, with_text=True)
+        except Exception as e:
+            logger.warning("Metinli hook segment başarısız (%s), metinsiz deneniyor", e)
+            _build_hook_segment(photo_paths, audio_path, hook_text, hook_seg, font, with_text=False)
 
-        # ── hook metni: özel karakterleri temizle ──────────────────
-        safe_hook = (
-            hook_text
-            .replace("\\", "")
-            .replace("'", "’")
-            .replace(":", "\\:")
-            .replace("[", "\\[")
-            .replace("]", "\\]")
-            .replace(",", "\\,")
-        )[:80]
+        # ── Drone videosu indir + segment yap (başarısız olursa atla) ─
+        drone_ok = False
+        try:
+            if not drone_video_url:
+                raise ValueError("drone URL yok")
+            logger.info("Drone video indiriliyor...")
+            resp = requests.get(drone_video_url, timeout=120)
+            resp.raise_for_status()
+            drone_path.write_bytes(resp.content)
 
-        drawtext = (
-            f"drawtext=text='{safe_hook}'"
-            ":fontsize=54"
-            ":fontcolor=white"
-            ":x=(w-text_w)/2"
-            ":y=(h*0.55-text_h/2)"
-            ":shadowcolor=black@0.8"
-            ":shadowx=2:shadowy=2"
-            ":box=1"
-            ":boxcolor=black@0.45"
-            ":boxborderw=18"
-        )
-
-        # ── Segment 1: slaytshow + hook metni + ses ────────────────
-        if n == 1:
-            # Tek fotoğraf
-            vf_hook = (
-                "scale=1080:1920:force_original_aspect_ratio=increase,"
-                "crop=1080:1920,"
-                f"{drawtext}"
-            )
             _run([
                 "ffmpeg", "-y",
-                "-loop", "1",
-                "-framerate", "30",
-                "-i", str(photo_paths[0]),
-                "-i", str(audio_path),
-                "-vf", vf_hook,
+                "-i", str(drone_path),
+                "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                "-vf", ("scale=1080:1920:force_original_aspect_ratio=increase,"
+                        "crop=1080:1920,setsar=1,fps=30,format=yuv420p"),
                 "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-c:a", "aac", "-b:a", "128k",
-                "-r", "30",
-                "-t", str(total_duration),
-                "-pix_fmt", "yuv420p",
-                str(hook_seg)
-            ], "hook-segment")
-        else:
-            # Çoklu fotoğraf — her fotoğrafı ayrı video'ya çevir, sonra birleştir
-            slide_segs = []
-            for i, p in enumerate(photo_paths):
-                seg = tmp / f"slide_{i}.mp4"
-                logger.info("Slide %d: %s (%d KB)", i, p, p.stat().st_size // 1024)
+                "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                "-t", "8", "-shortest", "-pix_fmt", "yuv420p",
+                str(drone_seg)
+            ], "drone-segment")
+            drone_ok = True
+        except Exception as e:
+            logger.warning("Drone segment başarısız (%s), sadece slaytshow kullanılacak", e)
+
+        # ── Birleştir (drone varsa) ────────────────────────────────
+        if drone_ok:
+            try:
                 _run([
                     "ffmpeg", "-y",
-                    "-loop", "1",
-                    "-framerate", "30",
-                    "-i", str(p),
-                    "-vf", (
-                        "scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,"
-                        "crop=1080:1920,"
-                        "setsar=1,"
-                        "format=yuv420p"
-                    ),
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                    "-r", "30",
-                    "-t", str(slide_duration),
-                    "-pix_fmt", "yuv420p",
-                    str(seg)
-                ], f"slide-{i}")
-                slide_segs.append(seg)
-
-            # concat filter ile birleştir
-            inputs = []
-            for seg in slide_segs:
-                inputs += ["-i", str(seg)]
-            n_segs = len(slide_segs)
-            filter_str = "".join(f"[{i}:v]" for i in range(n_segs))
-            filter_str += f"concat=n={n_segs}:v=1:a=0[v]"
-
-            slideshow_raw = tmp / "slideshow_raw.mp4"
-            _run([
-                "ffmpeg", "-y",
-                *inputs,
-                "-filter_complex", filter_str,
-                "-map", "[v]",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-r", "30", "-pix_fmt", "yuv420p",
-                str(slideshow_raw)
-            ], "slideshow")
-
-            # hook metni + ses ekle
-            vf_text = (
-                "scale=1080:1920:force_original_aspect_ratio=increase,"
-                "crop=1080:1920,"
-                f"{drawtext}"
-            )
-            _run([
-                "ffmpeg", "-y",
-                "-i", str(slideshow_raw),
-                "-i", str(audio_path),
-                "-vf", vf_text,
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-c:a", "aac", "-b:a", "128k",
-                "-r", "30", "-t", str(total_duration),
-                "-pix_fmt", "yuv420p",
-                str(hook_seg)
-            ], "hook-segment")
-
-        # ── Segment 2: drone video (ölçekle + sessiz ses ekle) ─────
-        vf_drone = (
-            "scale=1080:1920:force_original_aspect_ratio=increase,"
-            "crop=1080:1920"
-        )
-
-        _run([
-            "ffmpeg", "-y",
-            "-i", str(drone_path),
-            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-            "-vf", vf_drone,
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-            "-c:a", "aac", "-b:a", "128k",
-            "-r", "30", "-t", "10",
-            "-pix_fmt", "yuv420p",
-            "-shortest",
-            str(drone_seg)
-        ], "drone-segment")
-
-        # ── Birleştir ───────────────────────────────────────────────
-        _run([
-            "ffmpeg", "-y",
-            "-i", str(hook_seg),
-            "-i", str(drone_seg),
-            "-filter_complex",
-            "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
-            "-map", "[v]", "-map", "[a]",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "22",
-            "-c:a", "aac", "-b:a", "128k",
-            "-pix_fmt", "yuv420p",
-            str(final_tmp)
-        ], "concat")
+                    "-i", str(hook_seg),
+                    "-i", str(drone_seg),
+                    "-filter_complex",
+                    "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
+                    "-map", "[v]", "-map", "[a]",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "22", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                    str(final_tmp)
+                ], "concat")
+            except Exception as e:
+                logger.warning("Final concat başarısız (%s), sadece hook segment", e)
+                shutil.copy(hook_seg, final_tmp)
+        else:
+            shutil.copy(hook_seg, final_tmp)
 
         # ── kalıcı konuma taşı ─────────────────────────────────────
         dest = OUTPUT_DIR / f"yacht_{uuid.uuid4().hex[:8]}.mp4"

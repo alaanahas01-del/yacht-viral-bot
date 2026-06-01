@@ -23,25 +23,54 @@ media_groups: dict = {}
 # ── helpers ────────────────────────────────────────────────────────
 
 async def send_message(chat_id: int, text: str):
-    async with httpx.AsyncClient() as client:
-        await client.post(f"{TELEGRAM_API}/sendMessage", json={
-            "chat_id": chat_id, "text": text, "parse_mode": "HTML"
-        })
+    # Telegram mesaj limiti 4096 karakter
+    text = text[:4000]
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(f"{TELEGRAM_API}/sendMessage", json={
+                "chat_id": chat_id, "text": text, "parse_mode": "HTML"
+            })
+            # HTML parse hatası olursa düz metin olarak tekrar dene
+            if r.status_code != 200:
+                await client.post(f"{TELEGRAM_API}/sendMessage", json={
+                    "chat_id": chat_id, "text": text
+                })
+    except Exception as e:
+        logger.error("send_message hatası: %s", e)
 
 async def send_video(chat_id: int, video_path: str, caption: str = ""):
-    async with httpx.AsyncClient(timeout=120) as client:
-        with open(video_path, "rb") as f:
-            await client.post(
-                f"{TELEGRAM_API}/sendVideo",
-                data={"chat_id": chat_id, "caption": caption, "supports_streaming": "true"},
-                files={"video": ("video.mp4", f, "video/mp4")}
-            )
+    caption = (caption or "")[:1000]  # Telegram caption limiti ~1024
+    try:
+        size_mb = os.path.getsize(video_path) / (1024 * 1024)
+        async with httpx.AsyncClient(timeout=300) as client:
+            with open(video_path, "rb") as f:
+                r = await client.post(
+                    f"{TELEGRAM_API}/sendVideo",
+                    data={"chat_id": chat_id, "caption": caption, "supports_streaming": "true"},
+                    files={"video": ("video.mp4", f, "video/mp4")}
+                )
+            # sendVideo başarısızsa (örn. >50MB) document olarak dene
+            if r.status_code != 200:
+                logger.warning("sendVideo başarısız (%d, %.1fMB), document deneniyor", r.status_code, size_mb)
+                with open(video_path, "rb") as f:
+                    await client.post(
+                        f"{TELEGRAM_API}/sendDocument",
+                        data={"chat_id": chat_id, "caption": caption},
+                        files={"document": ("video.mp4", f, "video/mp4")}
+                    )
+    except Exception as e:
+        logger.error("send_video hatası: %s", e)
+        await send_message(chat_id, "⚠️ Video oluşturuldu ama gönderilemedi (boyut/bağlantı sorunu).")
 
 async def download_photo(file_id: str) -> bytes:
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.get(f"{TELEGRAM_API}/getFile", params={"file_id": file_id})
-        file_path = r.json()["result"]["file_path"]
+        j = r.json()
+        if not j.get("ok"):
+            raise RuntimeError(f"getFile başarısız: {j}")
+        file_path = j["result"]["file_path"]
         dl = await client.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}")
+        dl.raise_for_status()
         return dl.content
 
 async def process_media_group(group_id: str):
@@ -143,9 +172,14 @@ async def telegram_webhook(request: Request):
                 return {"ok": True}
 
             await send_message(chat_id, "✅ Fotoğraf alındı! Pipeline başlatılıyor...")
-            photo_bytes = await download_photo(file_id)
+            try:
+                photo_bytes = await download_photo(file_id)
+            except Exception as e:
+                logger.error("Fotoğraf indirilemedi: %s", e)
+                await send_message(chat_id, "❌ Fotoğraf indirilemedi, tekrar dene.")
+                return {"ok": True}
             asyncio.create_task(
-                process_yacht_submission(chat_id, caption, [photo_bytes], send_message)
+                process_yacht_submission(chat_id, caption, [photo_bytes], send_message, send_video)
             )
 
     elif text and not photos:
@@ -156,20 +190,3 @@ async def telegram_webhook(request: Request):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
-@app.get("/debug-keys")
-async def debug_keys():
-    """API key'lerin ilk 8 karakterini göster (debug için geçici)"""
-    def mask(key: str) -> str:
-        return key[:8] + "..." if key and len(key) > 8 else f"BOŞ({len(key) if key else 0})"
-    el_key = os.getenv("ELEVENLABS_API_KEY", "")
-    return {
-        "TELEGRAM_BOT_TOKEN": mask(os.getenv("TELEGRAM_BOT_TOKEN", "")),
-        "ANTHROPIC_API_KEY": mask(os.getenv("ANTHROPIC_API_KEY", "")),
-        "ELEVENLABS_API_KEY": mask(el_key),
-        "ELEVENLABS_API_KEY_len": len(el_key),
-        "ELEVENLABS_API_KEY_repr": repr(el_key[:12]),
-        "ELEVENLABS_API_KEY_end": repr(el_key[-4:]),
-        "ELEVENLABS_VOICE_ID": os.getenv("ELEVENLABS_VOICE_ID", ""),
-        "RUNWAY_API_KEY": mask(os.getenv("RUNWAY_API_KEY", "")),
-    }

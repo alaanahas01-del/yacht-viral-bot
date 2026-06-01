@@ -8,6 +8,12 @@ logger = logging.getLogger(__name__)
 def _get_client():
     return anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
+DEFAULT_VIDEO_PROMPT = (
+    "Cinematic luxury yacht drone footage, smooth aerial 360 orbit shot, "
+    "crystal blue Mediterranean water, golden hour lighting, "
+    "4K ultra sharp, photorealistic, no people, calm sea"
+)
+
 SYSTEM = """Sen lüks yat satış pazarlama uzmanısın.
 Viral sosyal medya hook'larını analiz edip aynı psikolojik teknikle orijinal hooklar üretirsin.
 İçerik tamamen özgün olmalı — başka videodan alıntı YAPMA.
@@ -26,6 +32,29 @@ SADECE aşağıdaki JSON formatında döndür, başka hiçbir şey yazma:
     "youtube": "YouTube Shorts başlığı (max 100 karakter) #Shorts\\n\\nAçıklama + #hashtagler"
   }
 }"""
+
+def _validate(data: dict) -> dict:
+    """Eksik key'leri varsayılanla doldur — pipeline'ın KeyError almasını önler."""
+    if not isinstance(data, dict):
+        data = {}
+    hook = str(data.get("hook") or "Bu tekneyi kaçırmayın").strip()[:120]
+    data["hook"] = hook
+    data["technique"] = str(data.get("technique") or "merak")
+    try:
+        data["viral_score"] = int(data.get("viral_score", 85))
+    except (ValueError, TypeError):
+        data["viral_score"] = 85
+    data["video_prompt"] = str(data.get("video_prompt") or DEFAULT_VIDEO_PROMPT)
+
+    caps = data.get("captions")
+    if not isinstance(caps, dict):
+        caps = {}
+    caps["tiktok"]    = str(caps.get("tiktok") or hook)
+    caps["instagram"] = str(caps.get("instagram") or hook)
+    caps["youtube"]   = str(caps.get("youtube") or (hook + " #Shorts"))
+    data["captions"] = caps
+    return data
+
 
 def generate_viral_hook(yacht_info: str) -> dict:
     """
@@ -85,7 +114,8 @@ def generate_viral_hook(yacht_info: str) -> dict:
                 end   = text.rfind("}") + 1
                 if start != -1 and end > start:
                     try:
-                        return json.loads(text[start:end])
+                        data = json.loads(text[start:end])
+                        return _validate(data)
                     except json.JSONDecodeError:
                         pass
 

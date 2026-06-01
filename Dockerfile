@@ -1,7 +1,8 @@
 FROM python:3.11-slim
 
-# FFmpeg kur (video montajı için şart)
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+# FFmpeg + fontlar kur (video montajı ve drawtext için şart)
+# fonts-dejavu-core: Türkçe karakterleri (ç ş ğ ı İ ö ü) destekler
+RUN apt-get update && apt-get install -y ffmpeg fonts-dejavu-core && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

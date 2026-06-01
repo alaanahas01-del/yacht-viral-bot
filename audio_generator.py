@@ -35,7 +35,6 @@ def generate_voiceover(text: str) -> bytes:
     }
 
     logger.info("ElevenLabs TTS: %s...", text[:60])
-    logger.info("ElevenLabs key len=%d prefix=%s", len(api_key), api_key[:8])
     r = requests.post(url, json=payload, headers=headers, timeout=30)
 
     if r.status_code != 200:

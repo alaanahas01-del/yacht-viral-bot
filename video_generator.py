@@ -48,8 +48,8 @@ def _resize_image(photo_bytes: bytes) -> bytes:
             quality -= 10
 
         return data
-    except ImportError:
-        logger.warning("Pillow yok, orijinal fotoğraf kullanılıyor")
+    except Exception as e:
+        logger.warning("Görsel küçültme başarısız (%s), orijinal kullanılıyor", e)
         return photo_bytes
 
 

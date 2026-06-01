@@ -14,3 +14,5 @@ venv/
 *.log
 .idea/
 .vscode/
+output_videos/
+_test_*.py
