@@ -104,25 +104,45 @@ def assemble_final_video(
                 str(hook_seg)
             ], "hook-segment")
         else:
-            # Çoklu fotoğraf — concat demuxer ile slaytshow
-            concat_file = tmp / "slides.txt"
-            lines = []
-            for p in photo_paths:
-                lines.append(f"file '{p}'")
-                lines.append(f"duration {slide_duration:.2f}")
-            lines.append(f"file '{photo_paths[-1]}'")
-            concat_file.write_text("\n".join(lines))
+            # Çoklu fotoğraf — her fotoğrafı ayrı video'ya çevir, sonra birleştir
+            slide_segs = []
+            for i, p in enumerate(photo_paths):
+                seg = tmp / f"slide_{i}.mp4"
+                _run([
+                    "ffmpeg", "-y",
+                    "-loop", "1", "-i", str(p),
+                    "-vf", (
+                        "scale=1080:1920:force_original_aspect_ratio=increase,"
+                        "crop=1080:1920,"
+                        "format=yuv420p"
+                    ),
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-r", "30", "-t", str(slide_duration),
+                    "-pix_fmt", "yuv420p",
+                    str(seg)
+                ], f"slide-{i}")
+                slide_segs.append(seg)
+
+            # concat filter ile birleştir
+            inputs = []
+            for seg in slide_segs:
+                inputs += ["-i", str(seg)]
+            n_segs = len(slide_segs)
+            filter_str = "".join(f"[{i}:v]" for i in range(n_segs))
+            filter_str += f"concat=n={n_segs}:v=1:a=0[v]"
 
             slideshow_raw = tmp / "slideshow_raw.mp4"
             _run([
                 "ffmpeg", "-y",
-                "-f", "concat", "-safe", "0", "-i", str(concat_file),
-                "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+                *inputs,
+                "-filter_complex", filter_str,
+                "-map", "[v]",
                 "-c:v", "libx264", "-preset", "fast", "-crf", "23",
                 "-r", "30", "-pix_fmt", "yuv420p",
                 str(slideshow_raw)
             ], "slideshow")
 
+            # hook metni + ses ekle
             vf_text = (
                 "scale=1080:1920:force_original_aspect_ratio=increase,"
                 "crop=1080:1920,"
